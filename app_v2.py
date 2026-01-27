@@ -7,8 +7,7 @@ import io
 def handle_24h_time(date_str, time_str):
     try:
         h, m, s = map(int, str(time_str).split(':'))
-        # 기준 일자 처리 (YYYYMMDD 형식 대응)
-        date_str = str(date_str)
+        date_str = str(date_str).replace('-', '').replace('.', '')
         if len(date_str) == 8:
             date_dt = datetime.strptime(date_str, '%Y%m%d')
         else:
@@ -25,100 +24,124 @@ def handle_24h_time(date_str, time_str):
 
 # UI 설정
 st.set_page_config(page_title="AI 영상분석-편성 매칭 에이전트", layout="wide")
-st.title("🕒 AI 영상분석 기반 광고 포지션 판정 시스템")
-st.markdown("영상분석 탐지 기록(프로그램명 없음)과 편성표를 **시간 기반**으로 매칭합니다.")
+st.title("🕒 통합 시간 기반 광고 포지션 판정 시스템")
+st.markdown("모든 파일(영상분석, 포함편성, 제외편성)을 **한 번에 업로드** 하세요. 시스템이 자동으로 분류합니다.")
 
-# 2. 파일 업로드
-with st.sidebar:
-    st.header("파일 업로드")
-    ad_file = st.file_uploader("1. 영상분석 탐지 파일", type=['xlsx', 'csv'])
-    incl_file = st.file_uploader("2. 프로그램 편성(광고포함)", type=['xlsx', 'csv'])
-    excl_file = st.file_uploader("3. 프로그램 편성(광고제외)", type=['xlsx', 'csv'])
-    
-    if st.button("🔄 데이터 리셋"):
-        st.rerun()
+# 2. 통합 파일 업로드
+uploaded_files = st.file_uploader(
+    "📂 관련 파일을 모두 선택하여 끌어다 놓으세요 (XLSX, CSV)", 
+    type=['xlsx', 'csv'], 
+    accept_multiple_files=True
+)
 
-if ad_file and incl_file and excl_file:
-    # 데이터 로드 (헤더 위치는 파일 특성에 맞춰 조정)
-    df_ad = pd.read_excel(ad_file) # 영상분석 파일은 보통 헤더가 0번행
-    df_incl = pd.read_excel(incl_file, skiprows=3)
-    df_excl = pd.read_excel(excl_file, skiprows=3)
+if uploaded_files:
+    ad_files = []
+    df_incl = None
+    df_excl = None
 
-    st.success("✅ 모든 파일 로드 완료. 분석을 시작합니다.")
-
-    # 3. 전처리: 시간 데이터 변환
-    # 영상분석 파일 컬럼 매핑: 기준일자, 시작일시, 종료일시
-    df_ad['start_dt'] = df_ad.apply(lambda r: handle_24h_time(r['기준일자'], r['시작일시']), axis=1)
-    df_ad['end_dt'] = df_ad.apply(lambda r: handle_24h_time(r['기준일자'], r['종료일시']), axis=1)
-
-    # 편성표 날짜 기준 설정 (광고 파일의 첫 행 날짜 기준)
-    ref_date = str(df_ad['기준일자'].iloc[0])
-    df_incl['start_dt'] = df_incl.apply(lambda r: handle_24h_time(ref_date, r['시작시간']), axis=1)
-    df_incl['end_dt'] = df_incl.apply(lambda r: handle_24h_time(ref_date, r['종료시간']), axis=1)
-    df_excl['start_dt'] = df_excl.apply(lambda r: handle_24h_time(ref_date, r['시작시간']), axis=1)
-    df_excl['end_dt'] = df_excl.apply(lambda r: handle_24h_time(ref_date, r['종료시간']), axis=1)
-
-    # 4. 시간 기반 매칭 루프
-    report_data = []
-    
-    for _, ad in df_ad.iterrows():
-        if ad['광고소재ID'] == "광고아님": continue # 광고가 아닌 구간 제외
-        
-        ad_start = ad['start_dt']
-        
-        # [Step 1] 광고 포함 편성표에서 해당 시간이 포함된 프로그램 찾기
-        matched_incl = df_incl[(df_incl['start_dt'] <= ad_start) & (df_incl['end_dt'] > ad_start)]
-        
-        if not matched_incl.empty:
-            target_prog = matched_incl.iloc[0]['프로그램']
-            prog_start_str = matched_incl.iloc[0]['시작시간']
-            prog_end_str = matched_incl.iloc[0]['종료시간']
+    # 파일 자동 분류 로직
+    for file in uploaded_files:
+        # 편성표는 보통 위쪽 3행이 타이틀이므로 4행(skiprows=3)부터 읽어 확인
+        try:
+            # 우선 헤더 없이 읽어서 판단
+            sample_df = pd.read_excel(file, nrows=10)
             
-            # [Step 2] 포지션 판정 (광고제외 편성표 기준)
-            target_excl = df_excl[df_excl['프로그램'] == target_prog]
-            
-            if not target_excl.empty:
-                excl_start = target_excl.iloc[0]['start_dt']
-                excl_end = target_excl.iloc[0]['end_dt']
-                
-                if ad_start >= excl_start and ad_start < excl_end:
-                    final_pos = "중광고"
-                elif ad_start < excl_start:
-                    final_pos = "전광고"
-                else:
-                    final_pos = "후광고"
+            # 영상분석 파일 판별: '광고소재ID'나 '광고명' 컬럼이 있는 경우
+            if any(col in sample_df.columns for col in ['광고소재ID', '광고명', '시작일시']):
+                ad_files.append(file)
             else:
-                final_pos = "판정불가(편성미매칭)"
+                # 편성표 판별 (3행 건너뛰고 '프로그램' 컬럼 확인)
+                sched_df = pd.read_excel(file, skiprows=3)
+                if '프로그램' in sched_df.columns:
+                    if '제외' in file.name:
+                        df_excl = sched_df
+                    else:
+                        df_incl = sched_df
+        except Exception as e:
+            st.error(f"파일 분석 중 오류 발생 ({file.name}): {e}")
+
+    # 분류 상태 표시
+    c1, c2, c3 = st.columns(3)
+    c1.metric("영상분석 파일", f"{len(ad_files)}개")
+    c2.metric("포함 편성표", "✅ 로드됨" if df_incl is not None else "❌ 미확인")
+    c3.metric("제외 편성표", "✅ 로드됨" if df_excl is not None else "❌ 미확인")
+
+    if ad_files and df_incl is not None and df_excl is not None:
+        if st.button("🚀 통합 분석 시작"):
+            all_reports = []
+            
+            for ad_file in ad_files:
+                df_ad = pd.read_excel(ad_file)
+                if df_ad.empty: continue
                 
-            report_data.append({
-                '일자': ad['기준일자'],
-                '시작시간': ad['시작일시'],
-                '종료시간': ad['종료일시'],
-                '광고주': "-", # 영상분석 데이터에는 광고주 정보가 없음
-                '상품명': ad['광고명'],
-                '광고유형': "영상분석",
-                '[프로그램 구간]': f"● {target_prog} ({prog_start_str}~{prog_end_str}) ●",
-                '매칭 프로그램명': target_prog,
-                '최종 판정 위치': final_pos,
-                '매칭 신뢰도': "100% (시간기반)",
-                '사유': f"방영시간 {ad['시작일시']} 기준 자동 매칭"
-            })
+                # 기준일자 설정
+                ref_date = str(df_ad['기준일자'].iloc[0])
+                
+                # 시간 데이터 전처리
+                df_ad['start_dt'] = df_ad.apply(lambda r: handle_24h_time(r['기준일자'], r['시작일시']), axis=1)
+                
+                # 편성표 시간 변환 (사본 사용)
+                tmp_incl = df_incl.copy()
+                tmp_excl = df_excl.copy()
+                
+                for df in [tmp_incl, tmp_excl]:
+                    df['start_dt'] = df.apply(lambda r: handle_24h_time(ref_date, r['시작시간']), axis=1)
+                    df['end_dt'] = df.apply(lambda r: handle_24h_time(ref_date, r['종료시간']), axis=1)
 
-    # 결과 표시
-    result_df = pd.DataFrame(report_data)
-    st.subheader("📊 매칭 분석 결과")
-    st.dataframe(result_df, use_container_width=True)
+                # 매칭 루프
+                for _, ad in df_ad.iterrows():
+                    if ad['광고소재ID'] == "광고아님": continue
+                    
+                    ad_start = ad['start_dt']
+                    matched_incl = tmp_incl[(tmp_incl['start_dt'] <= ad_start) & (tmp_incl['end_dt'] > ad_start)]
+                    
+                    if not matched_incl.empty:
+                        target_prog = matched_incl.iloc[0]['프로그램']
+                        prog_times = f"{matched_incl.iloc[0]['시작시간']}~{matched_incl.iloc[0]['종료시간']}"
+                        
+                        target_excl = tmp_excl[tmp_excl['프로그램'] == target_prog]
+                        
+                        if not target_excl.empty:
+                            excl_start = target_excl.iloc[0]['start_dt']
+                            excl_end = target_excl.iloc[0]['end_dt']
+                            
+                            if ad_start >= excl_start and ad_start < excl_end:
+                                final_pos = "중광고"
+                            elif ad_start < excl_start:
+                                final_pos = "전광고"
+                            else:
+                                final_pos = "후광고"
+                        else:
+                            final_pos = "판정불가(제외편성미매칭)"
+                            
+                        all_reports.append({
+                            '파일명': ad_file.name,
+                            '일자': ad['기준일자'],
+                            '시작시간': ad['시작일시'],
+                            '종료시간': ad['종료일시'],
+                            '상품명': ad['광고명'],
+                            '[프로그램 구간]': f"● {target_prog} ({prog_times}) ●",
+                            '매칭 프로그램명': target_prog,
+                            '최종 판정 위치': final_pos,
+                            '비고': "자동매칭완료"
+                        })
 
-    # 엑셀 다운로드
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        result_df.to_excel(writer, index=False)
-    
-    st.download_button(
-        label="📥 결과 리포트 다운로드 (Excel)",
-        data=output.getvalue(),
-        file_name=f"영상분석_매칭결과_{ref_date}.xlsx",
-        mime="application/vnd.ms-excel"
-    )
+            if all_reports:
+                result_df = pd.DataFrame(all_reports)
+                st.subheader("📊 통합 분석 결과")
+                st.dataframe(result_df, use_container_width=True)
+
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    result_df.to_excel(writer, index=False)
+                
+                st.download_button(
+                    label="📥 통합 결과 리포트 다운로드 (Excel)",
+                    data=output.getvalue(),
+                    file_name=f"통합_분석결과_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.ms-excel"
+                )
+    else:
+        st.warning("분석에 필요한 모든 파일이 감지되지 않았습니다. 파일명에 '제외'가 포함되어 있는지 확인해주세요.")
 else:
-    st.warning("왼쪽 사이드바에서 파일 3종을 모두 업로드해 주세요.")
+    st.info("파일들을 업로드창에 한꺼번에 올려주세요.")
