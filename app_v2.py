@@ -65,7 +65,7 @@ def smart_load_and_classify(uploaded_files):
 
 # UI 설정
 st.set_page_config(page_title="AIVAS 광고-편성 매칭 시스템", layout="wide")
-st.title("🕒 (AIVAS) 시간 기반 광고 포지션 판정")
+st.title("🕒 (AIVAS)TV광고-프로그램 편성 정보 매칭 시스템")
 
 uploaded_files = st.file_uploader("📂 광고 탐지 및 편성표 파일들을 모두 업로드하세요", type=['xlsx', 'csv'], accept_multiple_files=True)
 
@@ -164,3 +164,4 @@ if uploaded_files:
                 )
     else:
         st.warning("분석을 위해 3종류의 파일(광고데이터, 포함편성표, 제외편성표)이 필요합니다.")
+
