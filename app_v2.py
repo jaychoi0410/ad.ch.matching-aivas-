@@ -61,7 +61,7 @@ def smart_load_and_classify(uploaded_files):
     return ad_data_list, df_incl, df_excl
 
 st.set_page_config(page_title="통합 광고 매칭 시스템", layout="wide")
-st.title("🕒 시간 기반 광고 포지션 판정 (누락 해결 버전)")
+st.title("🕒 TV광고-프로그램 편성 정보 매칭 시스템(AIVAS탐지결과사용)")
 
 uploaded_files = st.file_uploader("📂 파일 3개를 한꺼번에 업로드", type=['xlsx', 'csv'], accept_multiple_files=True)
 
@@ -143,3 +143,4 @@ if uploaded_files:
                 st.download_button("📥 통합 결과 다운로드", output.getvalue(), f"매칭결과_{datetime.now().strftime('%H%M')}.xlsx")
     else:
         st.warning("파일 분류 실패. 영상분석/광고탐지 파일과 포함/제외 편성표 3종이 모두 필요합니다.")
+
