@@ -29,7 +29,7 @@ def handle_24h_time(date_str, time_str, offset_sec=0):
     except:
         return pd.NaT
 
-# 2. 파일 로더 및 자동 분류
+# 2. 파일 로더
 def load_and_classify(uploaded_files):
     ad_df, incl_df, excl_df = None, None, None
     for file in uploaded_files:
@@ -57,109 +57,118 @@ def load_and_classify(uploaded_files):
     return ad_df, incl_df, excl_df
 
 # UI 설정
-st.set_page_config(page_title="AIVAS 정밀 매칭 에이전트 v9", layout="wide")
-st.title("🕒 (AIVAS) 광고 포지션 판정 시스템")
-st.markdown("중광고인 경우에만 `[프로그램 구간]`을 표기하여 방영 중 여부를 육안으로 쉽게 확인합니다.")
+st.set_page_config(page_title="AIVAS 지능형 매칭 v13", layout="wide")
+st.title("🕒 (AIVAS) 지능형 광고 매칭 및 자동 분류 시스템")
+st.markdown("상품명 키워드 분석을 통해 **PR/Non-PR을 자동으로 구분**하고 리포트를 생성합니다.")
+
+# 키워드 사전 설정
+default_keywords = "국제구조위원회, 유니세프, 공익광고, 방송통신심의위원회, 캠페인, 정부혁신, 환경부, 보건복지부, 협찬"
 
 with st.sidebar:
     st.header("⚙️ 시스템 설정")
     time_offset = st.number_input("AIVAS 시간 보정값 (초)", value=-3)
-    st.info("💡 02:00 이후 모든 광고를 시간순으로 분석합니다.")
+    buffer_val = st.slider("경계면 보호 버퍼 (초)", 0, 30, 15)
+    st.divider()
+    st.subheader("🔍 Non-PR 필터 키워드")
+    kw_input = st.text_area("쉼표로 구분하여 입력", default_keywords)
+    filter_keywords = [k.strip() for k in kw_input.split(',')]
 
-uploaded_files = st.file_uploader("📂 파일 3개를 한꺼번에 업로드", type=['xlsx', 'csv'], accept_multiple_files=True)
+uploaded_files = st.file_uploader("📂 파일 3개를 업로드하세요", type=['xlsx', 'csv'], accept_multiple_files=True)
 
 if uploaded_files:
     df_ad, df_incl, df_excl = load_and_classify(uploaded_files)
     
     if df_ad is not None and df_incl is not None and df_excl is not None:
-        if st.button("🚀 정밀 리포트 생성"):
+        if st.button("🚀 지능형 리포트 생성"):
             ref_date = str(df_ad['기준일자'].iloc[0])
             channel_name = str(df_ad['채널'].iloc[0]) if '채널' in df_ad.columns else "채널미확인"
             broadcast_start_dt = handle_24h_time(ref_date, "02:00:00")
             
-            # 편성표 시간 전처리
             for target in [df_incl, df_excl]:
                 target['dt_start'] = target.apply(lambda r: handle_24h_time(ref_date, r['시작시간']), axis=1)
                 target['dt_end'] = target.apply(lambda r: handle_24h_time(ref_date, r['종료시간']), axis=1)
 
-            # 시간순 정렬
+            results = []
             df_ad = df_ad.sort_values(by='시작일시').reset_index(drop=True)
 
-            results = []
             for _, row in df_ad.iterrows():
                 if "광고없음" in str(row['광고명']) or str(row['광고소재ID']) == "광고아님": continue
                 
-                # 02시 기준 필터링
                 ad_time_end = handle_24h_time(row['기준일자'], row['종료일시'])
                 if ad_time_end < broadcast_start_dt: continue
                 
-                # 보정 시간 적용 (-3초)
                 ad_time_corr = handle_24h_time(row['기준일자'], row['시작일시'], offset_sec=time_offset)
                 if pd.isna(ad_time_corr): continue
+
+                # [v13 핵심] Non-PR 키워드 검사
+                is_non_pr = any(k in str(row['광고명']) for k in filter_keywords)
+                ad_type = "Non-PR" if is_non_pr else "PR"
                 
-                # 1단계: 광고포함 편성표(Incl) 매칭
                 match = df_incl[(df_incl['dt_start'] <= ad_time_corr) & (df_incl['dt_end'] > ad_time_corr)]
                 
                 if not match.empty:
                     prog_name = match.iloc[0]['프로그램']
-                    
-                    # 2단계: 광고제외 편성표(Excl) 기준 판정
                     excl_info = df_excl[df_excl['프로그램'] == prog_name]
-                    prog_section, pos = "", "판정불가"
+                    prog_section, pos, reason = "", "판정불가", "정상 매칭"
                     
-                    if not excl_info.empty:
-                        ex_s_dt = excl_info.iloc[0]['dt_start']
-                        ex_e_dt = excl_info.iloc[0]['dt_end']
-                        ex_s_str = excl_info.iloc[0]['시작시간']
-                        ex_e_str = excl_info.iloc[0]['종료시간']
+                    if is_non_pr:
+                        reason = "공익광고 추정 - 미매칭 처리"
+                    elif not excl_info.empty:
+                        ex_s_dt, ex_e_dt = excl_info.iloc[0]['dt_start'], excl_info.iloc[0]['dt_end']
+                        ex_s_str, ex_e_str = excl_info.iloc[0]['시작시간'], excl_info.iloc[0]['종료시간']
                         
-                        # [핵심 로직] 중광고일 때만 구간 표기, 나머지는 공백
                         if ad_time_corr >= ex_s_dt and ad_time_corr < ex_e_dt:
-                            pos = "중광고"
-                            prog_section = f"● 프로그램 진행 중({ex_s_str}~{ex_e_str}) ●"
-                        elif ad_time_corr < ex_s_dt:
-                            pos = "전광고"
-                            prog_section = "" # 공백 처리
-                        else:
-                            pos = "후광고"
-                            prog_section = "" # 공백 처리
-                    
+                            if ad_time_corr < (ex_s_dt + timedelta(seconds=buffer_val)):
+                                pos, reason = "전광고", f"경계면 보정(시작+{buffer_val}s)"
+                            elif ad_time_corr >= (ex_e_dt - timedelta(seconds=buffer_val)):
+                                pos, reason = "후광고", f"경계면 보정(종료-{buffer_val}s)"
+                            else:
+                                pos = "중광고"
+                                prog_section = f"● 프로그램 진행 중({ex_s_str}~{ex_e_str}) ●"
+                        elif ad_time_corr < ex_s_dt: pos = "전광고"
+                        else: pos = "후광고"
+
                     results.append({
                         '일자': pd.to_datetime(ref_date).strftime('%Y-%m-%d'),
-                        '시작시간': row['시작일시'],
-                        '종료시간': row['종료일시'],
+                        '시작시간': row['시작일시'], '종료시간': row['종료일시'],
                         '광고주': str(row['광고명']).split('_')[0] if '_' in str(row['광고명']) else "-",
-                        '상품명': row['광고명'],
-                        '광고유형': "",
-                        '[프로그램 구간]': prog_section,
-                        '매칭 프로그램명': prog_name,
-                        '최종 판정 위치': pos,
-                        '사유': "정상 매칭"
+                        '상품명': row['광고명'], '광고유형': ad_type,
+                        '[프로그램 구간]': prog_section, '매칭 프로그램명': prog_name,
+                        '최종 판정 위치': pos, '사유': reason
                     })
                 else:
                     results.append({
                         '일자': pd.to_datetime(ref_date).strftime('%Y-%m-%d'),
                         '시작시간': row['시작일시'], '종료시간': row['종료일시'],
-                        '광고주': "-", '상품명': row['광고명'], '광고유형': "",
+                        '광고주': "-", '상품명': row['광고명'], '광고유형': ad_type,
                         '[프로그램 구간]': "", '매칭 프로그램명': "미매칭",
                         '최종 판정 위치': "판정불가", '사유': "검토 필요(편성 공백)"
                     })
 
-            if results:
-                res_df = pd.DataFrame(results)
-                st.subheader("📊 매칭 결과 리포트")
-                st.dataframe(res_df, use_container_width=True)
-                
-                mmdd = pd.to_datetime(ref_date).strftime('%m%d')
-                filename = f"(AIVAS)광고-프로그램_매칭_결과_{mmdd}({channel_name}).xlsx"
-                
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    res_df.to_excel(writer, index=False, sheet_name='Result')
-                
-                st.download_button(
-                    label=f"📥 {filename} 다운로드", 
-                    data=output.getvalue(), 
-                    file_name=filename,
-                    mime="application/vnd.ms-excel"
-                )
+            # 광고 없는 프로그램 블록 추가 (v12 유지)
+            current_res_df = pd.DataFrame(results)
+            day_progs = df_excl[df_excl['dt_end'] > broadcast_start_dt].copy()
+            for _, p_row in day_progs.iterrows():
+                p_name = p_row['프로그램']
+                has_midroll = not current_res_df[(current_res_df['매칭 프로그램명'] == p_name) & 
+                                                 (current_res_df['최종 판정 위치'] == '중광고')].empty
+                if not has_midroll:
+                    results.append({
+                        '일자': pd.to_datetime(ref_date).strftime('%Y-%m-%d'),
+                        '시작시간': p_row['시작시간'], '종료시간': p_row['종료시간'],
+                        '광고주': "-", '상품명': "탐지된 광고 없음", '광고유형': "",
+                        '[프로그램 구간]': f"● 프로그램 진행 중({p_row['시작시간']}~{p_row['종료시간']}) ●",
+                        '매칭 프로그램명': p_name, '최종 판정 위치': "중광고", '사유': "탐지광고없음"
+                    })
+
+            final_df = pd.DataFrame(results)
+            final_df['_sort_key'] = final_df['시작시간'].apply(lambda x: sum(int(a) * 60**i for i, a in enumerate(reversed(str(x).split(':')))))
+            final_df = final_df.sort_values(by='_sort_key').drop(columns=['_sort_key']).reset_index(drop=True)
+
+            st.dataframe(final_df, use_container_width=True)
+            mmdd = pd.to_datetime(ref_date).strftime('%m%d')
+            filename = f"(AIVAS)광고-프로그램_매칭_결과_{mmdd}({channel_name}).xlsx"
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                final_df.to_excel(writer, index=False, sheet_name='Result')
+            st.download_button(f"📥 {filename} 다운로드", output.getvalue(), filename)
