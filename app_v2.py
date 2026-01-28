@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import io
 
-# 1. 시간 처리 및 보정 함수 (-3초 기본 적용)
+# 1. 시간 처리 및 보정 함수
 def handle_24h_time(date_str, time_str, offset_sec=0):
     try:
         if pd.isna(time_str) or str(time_str).strip() == "": return pd.NaT
@@ -11,6 +11,7 @@ def handle_24h_time(date_str, time_str, offset_sec=0):
         h, m = int(parts[0]), int(parts[1])
         s = int(parts[2]) if len(parts) > 2 else 0
         
+        # 날짜 포맷 정리 (YYYY-MM-DD)
         clean_date = str(date_str).replace('.', '-').split(' ')[0]
         date_dt = pd.to_datetime(clean_date)
             
@@ -23,13 +24,14 @@ def handle_24h_time(date_str, time_str, offset_sec=0):
         else:
             base_dt = pd.to_datetime(f"{date_dt.strftime('%Y-%m-%d')} {h:02d}:{m:02d}:{s:02d}")
             
+        # 보정값 적용
         if offset_sec != 0:
             return base_dt + timedelta(seconds=offset_sec)
         return base_dt
     except:
         return pd.NaT
 
-# 2. 파일 로더 및 분류
+# 2. 파일 로더 및 자동 분류
 def load_and_classify(uploaded_files):
     ad_df, incl_df, excl_df = None, None, None
     for file in uploaded_files:
@@ -57,13 +59,14 @@ def load_and_classify(uploaded_files):
     return ad_df, incl_df, excl_df
 
 # UI 설정
-st.set_page_config(page_title="AIVAS 정밀 매칭 에이전트 v4", layout="wide")
-st.title("🕒 (AIVAS) 정밀 광고 포지션 판정 시스템")
-st.markdown("엄격한 슬롯 매칭을 적용합니다. 편성표상의 공백 구간 광고는 '검토 필요'로 분류됩니다.")
+st.set_page_config(page_title="AIVAS 방송시간 매칭 시스템", layout="wide")
+st.title("🕒 (AIVAS) 방송일시 기준 광고 판정 시스템")
+st.markdown("닐슨 방송 기준(**02:00 시작**)에 맞춰 AIVAS 광고를 필터링하여 매칭합니다.")
 
 with st.sidebar:
     st.header("⚙️ 시스템 설정")
-    time_offset = st.number_input("AIVAS 시간 보정값 (초)", value=-3, help="AIVAS 실측 시간에서 이만큼 가감하여 편성표와 대조합니다.")
+    time_offset = st.number_input("AIVAS 시간 보정값 (초)", value=-3)
+    st.info("💡 새벽 02:00 이전에 종료된 광고는 분석에서 자동 제외됩니다.")
 
 uploaded_files = st.file_uploader("📂 파일 3개를 한꺼번에 업로드", type=['xlsx', 'csv'], accept_multiple_files=True)
 
@@ -71,9 +74,12 @@ if uploaded_files:
     df_ad, df_incl, df_excl = load_and_classify(uploaded_files)
     
     if df_ad is not None and df_incl is not None and df_excl is not None:
-        if st.button("🚀 정밀 매칭 시작"):
+        if st.button("🚀 02시 기준 매칭 시작"):
             ref_date = str(df_ad['기준일자'].iloc[0])
             channel_name = str(df_ad['채널'].iloc[0]) if '채널' in df_ad.columns else "채널미확인"
+            
+            # 방송 시작 기준점 (새벽 02:00:00)
+            broadcast_start_dt = handle_24h_time(ref_date, "02:00:00")
             
             # 편성표 시간 전처리
             for target in [df_incl, df_excl]:
@@ -82,17 +88,25 @@ if uploaded_files:
 
             results = []
             for _, row in df_ad.iterrows():
+                # 광고 여부 필터링
                 if "광고없음" in str(row['광고명']) or str(row['광고소재ID']) == "광고아님": continue
                 
-                # AIVAS 실측 시각 보정 (-3초)
+                # AIVAS 원본 시간 확인
+                ad_time_start = handle_24h_time(row['기준일자'], row['시작일시'])
+                ad_time_end = handle_24h_time(row['기준일자'], row['종료일시'])
+                
+                # [로직] 02:00 기준 필터링 (종료 시간이 02:00 이후인 광고만 포함)
+                if ad_time_end < broadcast_start_dt:
+                    continue
+                
+                # 판정용 보정 시간 적용 (-3초)
                 ad_time_corr = handle_24h_time(row['기준일자'], row['시작일시'], offset_sec=time_offset)
                 if pd.isna(ad_time_corr): continue
                 
-                # 1단계: 엄격한 슬롯 매칭 (df_incl 내에 존재해야 함)
+                # 1단계: 엄격한 슬롯 매칭 (df_incl)
                 target_match = df_incl[(df_incl['dt_start'] <= ad_time_corr) & (df_incl['dt_end'] > ad_time_corr)]
                 
                 if not target_match.empty:
-                    # [정상 매칭 케이스]
                     final_match = target_match.iloc[0]
                     prog_name = final_match['프로그램']
                     match_reason = "정상 매칭"
@@ -123,7 +137,7 @@ if uploaded_files:
                         '사유': match_reason
                     })
                 else:
-                    # [공백 구간 등 매칭 실패 케이스]
+                    # 슬롯 밖 공백 구간
                     results.append({
                         '일자': pd.to_datetime(ref_date).strftime('%Y-%m-%d'),
                         '시작시간': row['시작일시'],
@@ -139,7 +153,7 @@ if uploaded_files:
 
             if results:
                 res_df = pd.DataFrame(results)
-                st.subheader("📊 매칭 결과 리포트")
+                st.subheader("📊 02시 이후 매칭 결과")
                 st.dataframe(res_df, use_container_width=True)
                 
                 mmdd = pd.to_datetime(ref_date).strftime('%m%d')
