@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import io
 
-# 1. 시간 처리 함수
+# 1. 시간 처리 및 보정 함수
 def handle_24h_time(date_str, time_str, offset_sec=0):
     try:
         if pd.isna(time_str) or str(time_str).strip() == "": return pd.NaT
@@ -34,23 +34,30 @@ def load_and_classify(uploaded_files):
     return ad_df, incl_df, excl_df
 
 # UI 설정
-st.set_page_config(page_title="AIVAS UI 최적화 v15", layout="wide")
-st.title("🕒 (AIVAS) 지능형 광고 매칭 시스템")
+st.set_page_config(page_title="AIVAS 지능형 매칭 v16", layout="wide")
+st.title("🕒 (AIVAS) 광고-프로그램 지능형 매칭 시스템")
 
-filter_keywords = ["국제구조위원회", "유니세프", "공익광고", "방송통신심의위원회", "캠페인", "정부혁신", "협찬"]
+# 기본 키워드 사전
+default_keywords = "국제구조위원회, 유니세프, 공익광고, 방송통신심의위원회, 캠페인, 정부혁신, 환경부, 보건복지부, 협찬"
 
 with st.sidebar:
-    st.header("⚙️ 설정")
+    st.header("⚙️ 시스템 설정")
     time_offset = st.number_input("시간 보정값 (초)", value=-3)
+    st.divider()
+    # [v16] 키워드 설정창 복구
+    st.subheader("🔍 Non-PR 필터 키워드")
+    kw_input = st.text_area("쉼표로 구분하여 입력", default_keywords, height=150)
+    filter_keywords = [k.strip() for k in kw_input.split(',')]
+    # 버퍼 설정은 내부 15초 고정 (UI에서 숨김)
     buffer_val = 15 
 
-uploaded_files = st.file_uploader("📂 파일 3개 업로드", type=['xlsx', 'csv'], accept_multiple_files=True)
+uploaded_files = st.file_uploader("📂 파일 3개를 업로드하세요 (영상분석, 포함편성표, 제외편성표)", type=['xlsx', 'csv'], accept_multiple_files=True)
 
 if uploaded_files:
     df_ad, df_incl, df_excl = load_and_classify(uploaded_files)
     
     if df_ad is not None and df_incl is not None and df_excl is not None:
-        if st.button("🚀 리포트 생성"):
+        if st.button("🚀 지능형 리포트 생성"):
             ref_date = str(df_ad['기준일자'].iloc[0])
             broadcast_start_dt = handle_24h_time(ref_date, "02:00:00")
             
@@ -68,6 +75,8 @@ if uploaded_files:
                 if ad_time_end < broadcast_start_dt: continue
                 
                 ad_time_corr = handle_24h_time(row['기준일자'], row['시작일시'], offset_sec=time_offset)
+                
+                # 지능형 키워드 필터링
                 is_non_pr = any(k in str(row['광고명']) for k in filter_keywords)
                 
                 match = df_incl[(df_incl['dt_start'] <= ad_time_corr) & (df_incl['dt_end'] > ad_time_corr)]
@@ -81,7 +90,7 @@ if uploaded_files:
                         reason = "공익광고 추정 - 미매칭 처리"
                     elif not excl_info.empty:
                         ex_s, ex_e = excl_info.iloc[0]['dt_start'], excl_info.iloc[0]['dt_end']
-                        # 내부 버퍼 로직 (엑셀에만 남김)
+                        # 경계면 보정 로직
                         if ad_time_corr >= ex_s and ad_time_corr < ex_e:
                             if ad_time_corr < (ex_s + timedelta(seconds=buffer_val)):
                                 pos, reason = "전광고", f"정상 매칭(경계면 보정: 시작+{buffer_val}s)"
@@ -109,7 +118,7 @@ if uploaded_files:
                         '[프로그램 구간]': "", '매칭 프로그램명': "미매칭", '최종 판정 위치': "판정불가", '사유': "검토 필요(편성 공백)"
                     })
 
-            # 탐지광고없음 추가
+            # 탐지광고없음 구간 추가
             current_df = pd.DataFrame(results)
             for _, p in df_excl[df_excl['dt_end'] > broadcast_start_dt].iterrows():
                 if current_df[(current_df['매칭 프로그램명'] == p['프로그램']) & (current_df['최종 판정 위치'] == '중광고')].empty:
@@ -124,14 +133,16 @@ if uploaded_files:
             final_df['sort'] = final_df['시작시간'].apply(lambda x: sum(int(a)*60**i for i,a in enumerate(reversed(str(x).split(':')))))
             final_df = final_df.sort_values('sort').drop(columns=['sort']).reset_index(drop=True)
             
-            # [핵심] 웹 UI 출력용 데이터 가공 (보정 문구 제거)
+            # [핵심] 웹 UI 출력용 데이터 가공 (경계면 보정 문구만 '정상 매칭'으로 치환)
             display_df = final_df.copy()
             display_df['사유'] = display_df['사유'].apply(lambda x: "정상 매칭" if "경계면 보정" in str(x) else x)
             
-            st.subheader("📊 매칭 결과 리포트 (웹 미리보기)")
+            st.subheader("📊 매칭 결과 리포트")
             st.dataframe(display_df, use_container_width=True)
             
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                final_df.to_excel(writer, index=False, sheet_name='Result') # 엑셀에는 보정 근거 포함
-            st.download_button("📥 전체 결과 엑셀 다운로드", output.getvalue(), f"AIVAS_Matching_Final.xlsx")
+                final_df.to_excel(writer, index=False, sheet_name='Result')
+            
+            mmdd = pd.to_datetime(ref_date).strftime('%m%d')
+            st.download_button(f"📥 (AIVAS)매칭_결과_{mmdd}_{channel_name}.xlsx 다운로드", output.getvalue(), f"AIVAS_Matching_{mmdd}.xlsx")
