@@ -57,22 +57,22 @@ def load_and_classify(uploaded_files):
     return ad_df, incl_df, excl_df
 
 # UI 설정
-st.set_page_config(page_title="AIVAS 최종 리포트 에이전트 v8", layout="wide")
-st.title("🕒 (AIVAS) 광고-편성 시간 기반 매칭 시스템")
-st.markdown("모든 광고 구간에 **광고제외(실방영) 시간**을 표기하고, 시간순으로 리스트를 구성합니다.")
+st.set_page_config(page_title="AIVAS 정밀 매칭 에이전트 v9", layout="wide")
+st.title("🕒 (AIVAS) 광고 포지션 판정 시스템")
+st.markdown("중광고인 경우에만 `[프로그램 구간]`을 표기하여 방영 중 여부를 육안으로 쉽게 확인합니다.")
 
 with st.sidebar:
     st.header("⚙️ 시스템 설정")
     time_offset = st.number_input("AIVAS 시간 보정값 (초)", value=-3)
-    st.info("💡 02:00 이후 모든 광고 데이터를 시간순으로 매칭합니다.")
+    st.info("💡 02:00 이후 모든 광고를 시간순으로 분석합니다.")
 
-uploaded_files = st.file_uploader("📂 파일 3개 업로드 (분석파일, 포함편성표, 제외편성표)", type=['xlsx', 'csv'], accept_multiple_files=True)
+uploaded_files = st.file_uploader("📂 파일 3개를 한꺼번에 업로드", type=['xlsx', 'csv'], accept_multiple_files=True)
 
 if uploaded_files:
     df_ad, df_incl, df_excl = load_and_classify(uploaded_files)
     
     if df_ad is not None and df_incl is not None and df_excl is not None:
-        if st.button("🚀 리포트 생성 시작"):
+        if st.button("🚀 정밀 리포트 생성"):
             ref_date = str(df_ad['기준일자'].iloc[0])
             channel_name = str(df_ad['채널'].iloc[0]) if '채널' in df_ad.columns else "채널미확인"
             broadcast_start_dt = handle_24h_time(ref_date, "02:00:00")
@@ -82,48 +82,47 @@ if uploaded_files:
                 target['dt_start'] = target.apply(lambda r: handle_24h_time(ref_date, r['시작시간']), axis=1)
                 target['dt_end'] = target.apply(lambda r: handle_24h_time(ref_date, r['종료시간']), axis=1)
 
-            # 광고 데이터 시간순 정렬 및 필터링
+            # 시간순 정렬
             df_ad = df_ad.sort_values(by='시작일시').reset_index(drop=True)
 
             results = []
             for _, row in df_ad.iterrows():
-                # 광고 여부 필터링
                 if "광고없음" in str(row['광고명']) or str(row['광고소재ID']) == "광고아님": continue
                 
-                # 02시 기준 필터링 (종료 시점 기준)
+                # 02시 기준 필터링
                 ad_time_end = handle_24h_time(row['기준일자'], row['종료일시'])
                 if ad_time_end < broadcast_start_dt: continue
                 
-                # 판정용 보정 시각 (-3초)
+                # 보정 시간 적용 (-3초)
                 ad_time_corr = handle_24h_time(row['기준일자'], row['시작일시'], offset_sec=time_offset)
                 if pd.isna(ad_time_corr): continue
                 
-                # 1단계: 프로그램 슬롯 매칭 (Incl)
+                # 1단계: 광고포함 편성표(Incl) 매칭
                 match = df_incl[(df_incl['dt_start'] <= ad_time_corr) & (df_incl['dt_end'] > ad_time_corr)]
                 
                 if not match.empty:
                     prog_name = match.iloc[0]['프로그램']
                     
-                    # 2단계: 광고제외 편성표(Excl)에서 해당 프로그램의 실제 방영 시간 추출
+                    # 2단계: 광고제외 편성표(Excl) 기준 판정
                     excl_info = df_excl[df_excl['프로그램'] == prog_name]
                     prog_section, pos = "", "판정불가"
                     
                     if not excl_info.empty:
-                        # 무조건 제외 편성표의 시작/종료 시각을 사용
                         ex_s_dt = excl_info.iloc[0]['dt_start']
                         ex_e_dt = excl_info.iloc[0]['dt_end']
                         ex_s_str = excl_info.iloc[0]['시작시간']
                         ex_e_str = excl_info.iloc[0]['종료시간']
                         
+                        # [핵심 로직] 중광고일 때만 구간 표기, 나머지는 공백
                         if ad_time_corr >= ex_s_dt and ad_time_corr < ex_e_dt:
                             pos = "중광고"
                             prog_section = f"● 프로그램 진행 중({ex_s_str}~{ex_e_str}) ●"
                         elif ad_time_corr < ex_s_dt:
                             pos = "전광고"
-                            prog_section = f"● {prog_name} ({ex_s_str}~{ex_e_str}) ●"
+                            prog_section = "" # 공백 처리
                         else:
                             pos = "후광고"
-                            prog_section = f"● {prog_name} ({ex_s_str}~{ex_e_str}) ●"
+                            prog_section = "" # 공백 처리
                     
                     results.append({
                         '일자': pd.to_datetime(ref_date).strftime('%Y-%m-%d'),
@@ -138,7 +137,6 @@ if uploaded_files:
                         '사유': "정상 매칭"
                     })
                 else:
-                    # 편성표 공백 구간
                     results.append({
                         '일자': pd.to_datetime(ref_date).strftime('%Y-%m-%d'),
                         '시작시간': row['시작일시'], '종료시간': row['종료일시'],
